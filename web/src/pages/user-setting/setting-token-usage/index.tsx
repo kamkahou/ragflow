@@ -472,6 +472,20 @@ const TokenUsageSettings: React.FC = () => {
               </div>
             </div>
             <div>
+              <Text type="secondary">{t('totalTokensLimit')}</Text>
+              <div
+                style={{
+                  fontSize: '24px',
+                  fontWeight: 'bold',
+                  color: '#722ed1',
+                }}
+              >
+                {statistics.total_tokens_limit > 0
+                  ? formatNumber(statistics.total_tokens_limit)
+                  : t('unlimited')}
+              </div>
+            </div>
+            <div>
               <Text type="secondary">{t('usersOverLimit')}</Text>
               <div
                 style={{

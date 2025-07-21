@@ -21,6 +21,7 @@ from api.db.db_models import DB, UserTokenUsage, User
 from api.db.services.common_service import CommonService
 from api.db.services.user_service import UserService
 from api import settings
+from peewee import fn
 
 
 class UserTokenService(CommonService):
@@ -266,36 +267,112 @@ class UserTokenService(CommonService):
             Dict: 統計信息
         """
         try:
+            logging.info("Starting to get token usage statistics")
+            
+            # 檢查表是否存在
+            try:
+                cls.model.select().limit(1).execute()
+                logging.info("user_token_usage table exists and is accessible")
+            except Exception as table_error:
+                logging.error(f"user_token_usage table issue: {table_error}")
+                # 如果表不存在或有問題，嘗試計算基本的用戶統計
+                from api.db.services.user_service import UserService
+                total_users = User.select().count()
+                logging.info(f"Total users from User table: {total_users}")
+                return {
+                    "total_users": total_users,
+                    "active_users": 0,
+                    "total_tokens_used": 0,
+                    "total_tokens_limit": 0,
+                    "users_over_limit": 0,
+                    "tokens_by_type": {},
+                    "statistics_date": datetime.now().isoformat()
+                }
+            
             # 總用戶數
             total_users = User.select().count()
+            logging.info(f"Total users: {total_users}")
             
-            # 啟用 token 限制的用戶數
-            users_with_limits = cls.model.select().where(cls.model.token_limit > 0).count()
+            # 檢查是否有任何 token 使用記錄
+            total_records = cls.model.select().count()
+            logging.info(f"Total token usage records: {total_records}")
+            
+            # 活躍用戶數 (有使用過 token 的用戶)
+            active_users_query = cls.model.select(cls.model.user_id).where(cls.model.used_tokens > 0).distinct()
+            active_users = active_users_query.count()
+            logging.info(f"Active users query executed, count: {active_users}")
+            
+            # 詳細查看活躍用戶
+            if active_users > 0:
+                for user_record in active_users_query.limit(5):
+                    logging.info(f"Active user sample: {user_record.user_id}")
             
             # 總 token 使用量
-            total_tokens_used = cls.model.select().scalar(
-                cls.model.select(cls.model.used_tokens.sum()).scalar()
-            ) or 0
+            total_tokens_used_query = cls.model.select(fn.Sum(cls.model.used_tokens)).scalar()
+            total_tokens_used = total_tokens_used_query or 0
+            logging.info(f"Total tokens used: {total_tokens_used}")
+            
+            # 總 token 限制量 (所有用戶的 token 限制總和，0 表示無限制的不計算在內)
+            total_tokens_limit_query = cls.model.select(fn.Sum(cls.model.token_limit)).where(cls.model.token_limit > 0).scalar()
+            total_tokens_limit = total_tokens_limit_query or 0
+            logging.info(f"Total tokens limit: {total_tokens_limit}")
+            
+            # 超過限制的用戶數
+            users_over_limit_query = cls.model.select(cls.model.user_id).where(
+                (cls.model.token_limit > 0) & (cls.model.used_tokens >= cls.model.token_limit)
+            ).distinct()
+            users_over_limit = users_over_limit_query.count()
+            logging.info(f"Users over limit: {users_over_limit}")
             
             # 按類型統計 token 使用量
             type_stats = {}
-            for record in cls.model.select(
+            type_query = cls.model.select(
                 cls.model.llm_type,
-                cls.model.used_tokens.sum().alias('total_tokens')
-            ).group_by(cls.model.llm_type).dicts():
-                type_stats[record['llm_type']] = record['total_tokens']
+                fn.Sum(cls.model.used_tokens).alias('total_tokens')
+            ).group_by(cls.model.llm_type)
             
-            return {
+            for record in type_query.dicts():
+                type_stats[record['llm_type']] = record['total_tokens']
+            logging.info(f"Type stats: {type_stats}")
+            
+            result = {
                 "total_users": total_users,
-                "users_with_limits": users_with_limits,
+                "active_users": active_users,
                 "total_tokens_used": total_tokens_used,
+                "total_tokens_limit": total_tokens_limit,
+                "users_over_limit": users_over_limit,
                 "tokens_by_type": type_stats,
                 "statistics_date": datetime.now().isoformat()
             }
+            logging.info(f"Final statistics result: {result}")
+            
+            return result
             
         except Exception as e:
-            logging.error(f"Failed to get token usage statistics: {e}")
-            return {}
+            logging.error(f"Failed to get token usage statistics: {e}", exc_info=True)
+            # 如果統計計算失敗，至少返回用戶總數
+            try:
+                total_users = User.select().count()
+                return {
+                    "total_users": total_users,
+                    "active_users": 0,
+                    "total_tokens_used": 0,
+                    "total_tokens_limit": 0,
+                    "users_over_limit": 0,
+                    "tokens_by_type": {},
+                    "statistics_date": datetime.now().isoformat()
+                }
+            except Exception as fallback_error:
+                logging.error(f"Even fallback failed: {fallback_error}")
+                return {
+                    "total_users": 0,
+                    "active_users": 0,
+                    "total_tokens_used": 0,
+                    "total_tokens_limit": 0,
+                    "users_over_limit": 0,
+                    "tokens_by_type": {},
+                    "statistics_date": datetime.now().isoformat()
+                }
     
     @classmethod
     def _get_or_create_usage_record(cls, user_id: str, llm_type: str, llm_name: str) -> UserTokenUsage:

@@ -745,6 +745,7 @@ General：实体和关系提取提示来自 GitHub - microsoft/graphrag：基于
       totalUsers: '总用户数',
       activeUsers: '活跃用户',
       totalTokensUsed: '总 Token 使用量',
+      totalTokensLimit: '总 Token 限制量',
       usersOverLimit: '超限用户',
       userEmail: '用户邮箱',
       tokenOperation: '操作',
