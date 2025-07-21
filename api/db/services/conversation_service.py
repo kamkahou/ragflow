@@ -150,6 +150,8 @@ def completion(tenant_id, chat_id, question, name="New session", session_id=None
 
     if stream:
         try:
+            # 添加 conversation_id 到 kwargs 中
+            kwargs["conversation_id"] = conv.id
             for ans in chat(dia, msg, True, **kwargs):
                 ans = structure_answer(conv, ans, message_id, session_id)
                 yield "data:" + json.dumps({"code": 0, "data": ans}, ensure_ascii=False) + "\n\n"
@@ -162,6 +164,8 @@ def completion(tenant_id, chat_id, question, name="New session", session_id=None
 
     else:
         answer = None
+        # 添加 conversation_id 到 kwargs 中
+        kwargs["conversation_id"] = conv.id
         for ans in chat(dia, msg, False, **kwargs):
             answer = structure_answer(conv, ans, message_id, session_id)
             ConversationService.update_by_id(conv.id, conv.to_dict())
@@ -244,6 +248,8 @@ def iframe_completion(dialog_id, question, session_id=None, stream=True, **kwarg
 
     if stream:
         try:
+            # 添加 conversation_id 到 kwargs 中
+            kwargs["conversation_id"] = conv.id
             for ans in chat(dia, msg, True, **kwargs):
                 ans = structure_answer(conv, ans, message_id, session_id)
                 yield "data:" + json.dumps({"code": 0, "message": "", "data": ans},
@@ -257,6 +263,8 @@ def iframe_completion(dialog_id, question, session_id=None, stream=True, **kwarg
 
     else:
         answer = None
+        # 添加 conversation_id 到 kwargs 中
+        kwargs["conversation_id"] = conv.id
         for ans in chat(dia, msg, False, **kwargs):
             answer = structure_answer(conv, ans, message_id, session_id)
             API4ConversationService.append_message(conv.id, conv.to_dict())

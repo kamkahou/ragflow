@@ -835,7 +835,8 @@ class QuestionRecord(DataBaseModel):
 
 
 class UserTokenUsage(DataBaseModel):
-    user_id = CharField(max_length=32, null=False, help_text="用戶 ID", index=True)
+    user_id = CharField(max_length=32, null=True, help_text="用戶 ID（可選，向後兼容）", index=True)
+    conversation_id = CharField(max_length=32, null=True, help_text="對話會話 ID（優先使用）", index=True)
     llm_type = CharField(max_length=32, null=False, help_text="LLM 類型：CHAT|EMBEDDING|RERANK|ASR|IMAGE2TEXT|TTS", index=True)
     llm_name = CharField(max_length=128, null=False, help_text="LLM 模型名稱", index=True)
     used_tokens = IntegerField(default=0, help_text="已使用的 token 數量", index=True)
@@ -844,11 +845,19 @@ class UserTokenUsage(DataBaseModel):
     is_active = BooleanField(default=True, help_text="是否啟用限制", index=True)
 
     def __str__(self):
-        return f"{self.user_id}-{self.llm_type}-{self.llm_name}"
+        identifier = self.conversation_id or self.user_id
+        return f"{identifier}-{self.llm_type}-{self.llm_name}"
+    
+    def get_identifier(self):
+        """獲取用戶標識符，優先使用 conversation_id"""
+        return self.conversation_id or self.user_id
 
     class Meta:
         db_table = "user_token_usage"
-        primary_key = CompositeKey("user_id", "llm_type", "llm_name")
+        # 使用自動生成的主鍵，通過唯一索引來保證數據唯一性
+        indexes = [
+            (('user_id', 'conversation_id', 'llm_type', 'llm_name'), True),  # 唯一索引
+        ]
 
 
 def migrate_db():
@@ -962,5 +971,11 @@ def migrate_db():
     # 添加用戶 token 使用統計表
     try:
         UserTokenUsage.create_table()
+    except Exception:
+        pass
+    
+    # 為 UserTokenUsage 表添加 conversation_id 字段
+    try:
+        migrate(migrator.add_column("user_token_usage", "conversation_id", CharField(max_length=32, null=True, help_text="對話會話 ID（優先使用）", index=True)))
     except Exception:
         pass

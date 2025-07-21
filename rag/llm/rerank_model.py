@@ -539,7 +539,9 @@ class HuggingfaceRerank(DefaultRerank):
             raise exc
         return np.array(scores)
 
-    def __init__(self, key, model_name="BAAI/bge-reranker-v2-m3", base_url="http://127.0.0.1"):
+    def __init__(self, key, model_name="", base_url="http://127.0.0.1"):
+        if not model_name:
+            raise ValueError("model_name must be provided for HuggingfaceRerank")
         self.model_name = model_name.split("___")[0]
         self.base_url = base_url
 

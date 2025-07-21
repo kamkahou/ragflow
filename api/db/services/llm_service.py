@@ -14,6 +14,7 @@
 #  limitations under the License.
 #
 import logging
+from typing import Optional
 
 from langfuse import Langfuse
 
@@ -268,9 +269,10 @@ class TenantLLMService(CommonService):
 
 
 class LLMBundle:
-    def __init__(self, tenant_id, llm_type, llm_name=None, lang="Chinese", user_id=None):
+    def __init__(self, tenant_id, llm_type, llm_name=None, lang="Chinese", user_id=None, conversation_id: Optional[str] = None):
         self.tenant_id = tenant_id
         self.user_id = user_id or tenant_id  # 如果沒有提供用戶ID，使用tenant_id作為默認值
+        self.conversation_id = conversation_id  # 新增：對話會話ID
         self.llm_type = llm_type
         self.llm_name = llm_name
         self.mdl = TenantLLMService.model_instance(tenant_id, llm_type, llm_name, lang=lang)
@@ -301,13 +303,18 @@ class LLMBundle:
         # 使用實際的 LLM 名稱進行限制檢查
         actual_llm_name = self.llm_name or "default"
         
-        # 檢查 token 限制
+        # 檢查 token 限制，優先使用 conversation_id
         can_use, error_msg = UserTokenService.check_token_limit(
-            self.user_id, self.llm_type, actual_llm_name, tokens_to_use
+            user_id=self.user_id,
+            llm_type=self.llm_type,
+            llm_name=actual_llm_name,
+            tokens_to_use=tokens_to_use,
+            conversation_id=self.conversation_id
         )
         
         if not can_use:
-            logging.warning(f"Token limit exceeded for user {self.user_id} in {operation_name}: {error_msg}")
+            identifier = self.conversation_id or self.user_id
+            logging.warning(f"Token limit exceeded for identifier {identifier} in {operation_name}: {error_msg}")
             return False
             
         return True
@@ -323,13 +330,18 @@ class LLMBundle:
         # 使用實際的 LLM 名稱進行使用量記錄
         actual_llm_name = self.llm_name or "default"
         
-        # 記錄用戶 token 使用量
+        # 記錄用戶 token 使用量，優先使用 conversation_id
         success = UserTokenService.increase_token_usage(
-            self.user_id, self.llm_type, actual_llm_name, tokens_used
+            user_id=self.user_id,
+            llm_type=self.llm_type,
+            llm_name=actual_llm_name,
+            tokens_used=tokens_used,
+            conversation_id=self.conversation_id
         )
         
         if not success:
-            logging.error(f"Failed to record token usage for user {self.user_id} in {operation_name}: {tokens_used} tokens")
+            identifier = self.conversation_id or self.user_id
+            logging.error(f"Failed to record token usage for identifier {identifier} in {operation_name}: {tokens_used} tokens")
         
         # 同時記錄租戶級別的使用量（保持原有邏輯）
         if not TenantLLMService.increase_usage(self.tenant_id, self.llm_type, tokens_used, self.llm_name):

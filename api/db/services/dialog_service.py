@@ -61,16 +61,16 @@ class DialogService(CommonService):
         return list(chats.dicts())
 
 
-def chat_solo(dialog, messages, stream=True):
+def chat_solo(dialog, messages, stream=True, conversation_id=None):
     if llm_id2llm_type(dialog.llm_id) == "image2text":
-        chat_mdl = LLMBundle(dialog.tenant_id, LLMType.IMAGE2TEXT, dialog.llm_id)
+        chat_mdl = LLMBundle(dialog.tenant_id, LLMType.IMAGE2TEXT, dialog.llm_id, conversation_id=conversation_id)
     else:
-        chat_mdl = LLMBundle(dialog.tenant_id, LLMType.CHAT, dialog.llm_id)
+        chat_mdl = LLMBundle(dialog.tenant_id, LLMType.CHAT, dialog.llm_id, conversation_id=conversation_id)
 
     prompt_config = dialog.prompt_config
     tts_mdl = None
     if prompt_config.get("tts"):
-        tts_mdl = LLMBundle(dialog.tenant_id, LLMType.TTS)
+        tts_mdl = LLMBundle(dialog.tenant_id, LLMType.TTS, conversation_id=conversation_id)
     msg = [{"role": m["role"], "content": re.sub(r"##\d+\$\$", "", m["content"])} for m in messages if m["role"] != "system"]
     if stream:
         last_ans = ""
@@ -92,8 +92,12 @@ def chat_solo(dialog, messages, stream=True):
 
 def chat(dialog, messages, stream=True, **kwargs):
     assert messages[-1]["role"] == "user", "The last content of this conversation is not from user."
+    
+    # 從 kwargs 中獲取 conversation_id
+    conversation_id = kwargs.get("conversation_id")
+    
     if not dialog.kb_ids:
-        for ans in chat_solo(dialog, messages, stream):
+        for ans in chat_solo(dialog, messages, stream, conversation_id=conversation_id):
             yield ans
         return
 
@@ -135,16 +139,16 @@ def chat(dialog, messages, stream=True, **kwargs):
 
     create_retriever_ts = timer()
 
-    embd_mdl = LLMBundle(dialog.tenant_id, LLMType.EMBEDDING, embedding_model_name)
+    embd_mdl = LLMBundle(dialog.tenant_id, LLMType.EMBEDDING, embedding_model_name, conversation_id=conversation_id)
     if not embd_mdl:
         raise LookupError("Embedding model(%s) not found" % embedding_model_name)
 
     bind_embedding_ts = timer()
 
     if llm_id2llm_type(dialog.llm_id) == "image2text":
-        chat_mdl = LLMBundle(dialog.tenant_id, LLMType.IMAGE2TEXT, dialog.llm_id)
+        chat_mdl = LLMBundle(dialog.tenant_id, LLMType.IMAGE2TEXT, dialog.llm_id, conversation_id=conversation_id)
     else:
-        chat_mdl = LLMBundle(dialog.tenant_id, LLMType.CHAT, dialog.llm_id)
+        chat_mdl = LLMBundle(dialog.tenant_id, LLMType.CHAT, dialog.llm_id, conversation_id=conversation_id)
 
     bind_llm_ts = timer()
 
@@ -152,7 +156,7 @@ def chat(dialog, messages, stream=True, **kwargs):
     field_map = KnowledgebaseService.get_field_map(dialog.kb_ids)
     tts_mdl = None
     if prompt_config.get("tts"):
-        tts_mdl = LLMBundle(dialog.tenant_id, LLMType.TTS)
+        tts_mdl = LLMBundle(dialog.tenant_id, LLMType.TTS, conversation_id=conversation_id)
     # try to use sql if field mapping is good to go
     if field_map:
         logging.debug("Use SQL to retrieval:{}".format(questions[-1]))
@@ -179,7 +183,7 @@ def chat(dialog, messages, stream=True, **kwargs):
     rerank_mdl = None
     if dialog.rerank_id:
         try:
-            rerank_mdl = LLMBundle(dialog.tenant_id, LLMType.RERANK, dialog.rerank_id)
+            rerank_mdl = LLMBundle(dialog.tenant_id, LLMType.RERANK, dialog.rerank_id, conversation_id=conversation_id)
         except Exception as e:
             logging.warning(f"Failed to create rerank model {dialog.rerank_id}: {e}")
             # 如果创建失败，继续而不使用rerank模型
