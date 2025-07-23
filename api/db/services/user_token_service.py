@@ -115,7 +115,7 @@ class UserTokenService(CommonService):
     @DB.connection_context()
     def get_user_token_usage(cls, user_id: str) -> List[Dict]:
         """
-        獲取用戶的 token 使用情況
+        獲取用戶的 token 使用情況（基於 conversation_id 的聚合）
         
         Args:
             user_id: 用戶 ID
@@ -124,8 +124,63 @@ class UserTokenService(CommonService):
             List[Dict]: 用戶的 token 使用記錄列表
         """
         try:
-            records = cls.model.select().where(cls.model.user_id == user_id).dicts()
-            return list(records)
+            # 查詢用戶的所有 conversation
+            cursor = DB.execute_sql("""
+                SELECT id FROM conversation WHERE user_id = %s
+                UNION
+                SELECT id FROM api_4_conversation WHERE user_id = %s
+            """, (user_id, user_id))
+            
+            conversation_ids = [row[0] for row in cursor.fetchall()]
+            
+            if not conversation_ids:
+                # 如果沒有對話，返回預設的限制信息
+                try:
+                    from api.db.services.user_service import UserService
+                    success, user = UserService.get_by_id(user_id)
+                    if success and user:
+                        default_limit = 0 if user.is_superuser else getattr(settings, 'NORMAL_USER_TOKEN_LIMIT', 100000)
+                        return [{
+                            'llm_type': 'CHAT',
+                            'llm_name': 'default',
+                            'used_tokens': 0,
+                            'token_limit': default_limit,
+                            'reset_date': cls._get_next_reset_date(),
+                            'is_active': True
+                        }]
+                except Exception:
+                    pass
+                return []
+            
+            # 聚合同一用戶在不同 conversation 中的 token 使用量
+            placeholders = ','.join(['%s'] * len(conversation_ids))
+            cursor = DB.execute_sql(f"""
+                SELECT 
+                    llm_type,
+                    llm_name,
+                    SUM(used_tokens) as total_used_tokens,
+                    MAX(token_limit) as token_limit,
+                    MAX(reset_date) as reset_date,
+                    MAX(is_active) as is_active
+                FROM user_token_usage 
+                WHERE conversation_id IN ({placeholders})
+                GROUP BY llm_type, llm_name
+            """, conversation_ids)
+            
+            results = []
+            for row in cursor.fetchall():
+                llm_type, llm_name, used_tokens, token_limit, reset_date, is_active = row
+                results.append({
+                    'llm_type': llm_type,
+                    'llm_name': llm_name,
+                    'used_tokens': used_tokens or 0,
+                    'token_limit': token_limit or 0,
+                    'reset_date': reset_date,
+                    'is_active': bool(is_active)
+                })
+            
+            return results
+            
         except Exception as e:
             logging.error(f"Failed to get token usage for user {user_id}: {e}")
             return []

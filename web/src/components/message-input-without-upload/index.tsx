@@ -37,6 +37,7 @@ import {
   useState,
 } from 'react';
 import FileIcon from '../file-icon';
+import TokenUsageBar from '../token-usage-bar';
 import styles from './index.less';
 
 type FileType = Parameters<GetProp<UploadProps, 'beforeUpload'>>[0];
@@ -321,43 +322,50 @@ const MessageInput = ({
         <Flex
           gap={5}
           align="center"
-          justify="flex-end"
+          justify="space-between"
           style={{
             paddingRight: 10,
             paddingBottom: 10,
             width: fileList.length > 0 ? '50%' : '100%',
           }}
         >
-          {false && ( // 将 showUploadIcon 改为 false 来永久隐藏上传按钮
-            <Upload
-              onPreview={handlePreview}
-              onChange={handleChange}
-              multiple={false}
-              onRemove={handleRemove}
-              showUploadList={false}
-              beforeUpload={() => {
-                return false;
-              }}
-            >
-              <Button type={'primary'} disabled={disabled}>
-                <Paperclip className="size-4" />
+          {/* Token 使用量顯示 */}
+          <div style={{ flex: 1 }}>
+            <TokenUsageBar inline />
+          </div>
+
+          <Flex gap={5} align="center">
+            {false && ( // 将 showUploadIcon 改为 false 来永久隐藏上传按钮
+              <Upload
+                onPreview={handlePreview}
+                onChange={handleChange}
+                multiple={false}
+                onRemove={handleRemove}
+                showUploadList={false}
+                beforeUpload={() => {
+                  return false;
+                }}
+              >
+                <Button type={'primary'} disabled={disabled}>
+                  <Paperclip className="size-4" />
+                </Button>
+              </Upload>
+            )}
+            {sendLoading ? (
+              <Button onClick={handleStopOutputMessage}>
+                <CircleStop className="size-5" />
               </Button>
-            </Upload>
-          )}
-          {sendLoading ? (
-            <Button onClick={handleStopOutputMessage}>
-              <CircleStop className="size-5" />
-            </Button>
-          ) : (
-            <Button
-              type="primary"
-              onClick={handlePressEnter}
-              loading={sendLoading}
-              disabled={sendDisabled || isUploadingFile || sendLoading}
-            >
-              <SendHorizontal className="size-5" />
-            </Button>
-          )}
+            ) : (
+              <Button
+                type="primary"
+                onClick={handlePressEnter}
+                loading={sendLoading}
+                disabled={sendDisabled || isUploadingFile || sendLoading}
+              >
+                <SendHorizontal className="size-5" />
+              </Button>
+            )}
+          </Flex>
         </Flex>
       </Flex>
     </Flex>

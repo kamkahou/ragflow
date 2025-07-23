@@ -1024,3 +1024,7 @@ def delete_questions():
 
     except Exception as e:
         return server_error_response(e)
+
+
+# 設置自定義的 URL 前綴
+page_name = "user"
