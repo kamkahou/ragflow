@@ -835,6 +835,7 @@ class QuestionRecord(DataBaseModel):
 
 
 class UserTokenUsage(DataBaseModel):
+    id = CharField(max_length=32, primary_key=True)  # 添加明確的主鍵
     user_id = CharField(max_length=32, null=True, help_text="用戶 ID（可選，向後兼容）", index=True)
     conversation_id = CharField(max_length=32, null=True, help_text="對話會話 ID（優先使用）", index=True)
     llm_type = CharField(max_length=32, null=False, help_text="LLM 類型：CHAT|EMBEDDING|RERANK|ASR|IMAGE2TEXT|TTS", index=True)
@@ -854,7 +855,7 @@ class UserTokenUsage(DataBaseModel):
 
     class Meta:
         db_table = "user_token_usage"
-        # 使用自動生成的主鍵，通過唯一索引來保證數據唯一性
+        # 使用唯一索引來保證數據唯一性
         indexes = [
             (('user_id', 'conversation_id', 'llm_type', 'llm_name'), True),  # 唯一索引
         ]
@@ -977,5 +978,30 @@ def migrate_db():
     # 為 UserTokenUsage 表添加 conversation_id 字段
     try:
         migrate(migrator.add_column("user_token_usage", "conversation_id", CharField(max_length=32, null=True, help_text="對話會話 ID（優先使用）", index=True)))
+    except Exception:
+        pass
+    
+    # 為 UserTokenUsage 表添加 id 主鍵字段
+    try:
+        migrate(migrator.add_column("user_token_usage", "id", CharField(max_length=32, null=True, help_text="主鍵ID")))
+        # 為現有記錄生成 ID
+        from api.utils import get_uuid
+        cursor = DB.execute_sql("SELECT user_id, conversation_id, llm_type, llm_name FROM user_token_usage WHERE id IS NULL")
+        records = cursor.fetchall()
+        for record in records:
+            user_id, conversation_id, llm_type, llm_name = record
+            new_id = get_uuid()
+            DB.execute_sql("""
+                UPDATE user_token_usage 
+                SET id = %s 
+                WHERE user_id = %s AND (conversation_id IS NULL OR conversation_id = %s) AND llm_type = %s AND llm_name = %s AND id IS NULL
+                LIMIT 1
+            """, (new_id, user_id, conversation_id, llm_type, llm_name))
+    except Exception:
+        pass
+    
+    # 修改 user_id 字段允許 NULL
+    try:
+        migrate(migrator.alter_column_type("user_token_usage", "user_id", CharField(max_length=32, null=True, help_text="用戶 ID（可選，向後兼容）", index=True)))
     except Exception:
         pass

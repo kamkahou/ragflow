@@ -46,16 +46,10 @@ class UserTokenService(CommonService):
         if not settings.TOKEN_LIMIT_ENABLED:
             return True, ""
             
-        # 優先使用 conversation_id，如果沒有則使用 user_id
-        identifier = conversation_id or user_id
-        if not identifier:
-            return True, ""  # 如果都沒有提供，則不限制
-        
-        # 如果使用 user_id，檢查用戶是否為管理員
-        if user_id and not conversation_id:
-            success, user = UserService.get_by_id(user_id)
-            if success and user and user.is_superuser:
-                return True, ""
+        # 強制要求 conversation_id
+        if not conversation_id:
+            logging.error("conversation_id is required for token limit checking")
+            return True, ""  # 如果沒有 conversation_id，不限制（向下兼容）
         
         # 獲取或創建用戶 token 使用記錄
         usage_record = cls._get_or_create_usage_record(user_id, llm_type, llm_name, conversation_id)
@@ -88,10 +82,10 @@ class UserTokenService(CommonService):
             bool: 是否成功更新
         """
         try:
-            # 優先使用 conversation_id，如果沒有則使用 user_id
-            identifier = conversation_id or user_id
-            if not identifier:
-                return True  # 如果都沒有提供，則不記錄使用量
+            # 強制要求 conversation_id
+            if not conversation_id:
+                logging.error("conversation_id is required for token usage tracking")
+                return False
             
             # 獲取或創建用戶 token 使用記錄
             usage_record = cls._get_or_create_usage_record(user_id, llm_type, llm_name, conversation_id)
@@ -100,29 +94,21 @@ class UserTokenService(CommonService):
             if cls._should_reset_usage(usage_record):
                 cls._reset_usage(usage_record)
                 
-            # 更新使用量
-            # 構建查詢條件
-            where_conditions = [
-                cls.model.llm_type == llm_type,
-                cls.model.llm_name == llm_name
-            ]
-            
-            if conversation_id:
-                where_conditions.append(cls.model.conversation_id == conversation_id)
-            else:
-                where_conditions.append(cls.model.user_id == user_id)
-                
+            # 更新使用量 - 僅基於 conversation_id
             num = (
                 cls.model.update(used_tokens=cls.model.used_tokens + tokens_used)
-                .where(*where_conditions)
+                .where(
+                    cls.model.conversation_id == conversation_id,
+                    cls.model.llm_type == llm_type,
+                    cls.model.llm_name == llm_name
+                )
                 .execute()
             )
             
             return num > 0
             
         except Exception as e:
-            identifier = conversation_id or user_id
-            logging.error(f"Failed to increase token usage for identifier {identifier}: {e}")
+            logging.error(f"Failed to increase token usage for conversation_id {conversation_id}: {e}")
             return False
     
     @classmethod
@@ -242,52 +228,64 @@ class UserTokenService(CommonService):
                 (user_id, conversation_id, llm_type, llm_name, used_tokens, 
                  token_limit, reset_date, is_active, create_time, update_time) = record
                 
-                # 基於 conversation_id 的記錄
+                # 只處理基於 conversation_id 的記錄
                 if conversation_id is not None:
-                    # 安全地截取對話ID用於顯示
-                    conversation_display = conversation_id[:8] + '...' if len(conversation_id) > 8 else conversation_id
+                    # 通過 conversation_id 查找實際用戶信息
+                    actual_user_email = None
+                    actual_user_nickname = None
+                    actual_user_id = None
+                    actual_is_superuser = False
                     
-                    results.append({
-                        'user_id': conversation_id,  # 使用 conversation_id 作為用戶標識
-                        'nickname': f'會話 {conversation_display}',  # 顯示會話ID的前8位或完整ID
-                        'user_email': conversation_id,  # 使用完整的 conversation_id
-                        'is_superuser': False,  # conversation 用戶不是管理員
-                        'llm_type': llm_type,
-                        'llm_name': llm_name,
-                        'used_tokens': used_tokens,
-                        'token_limit': token_limit,
-                        'reset_date': reset_date,
-                        'is_active': bool(is_active),
-                        'create_date': create_time,
-                        'update_date': update_time,
-                    })
-                # 基於 user_id 的記錄（向後兼容）
-                elif user_id is not None:
-                    # 嘗試獲取用戶信息
                     try:
-                        user = User.get(User.id == user_id)
-                        nickname = user.nickname
-                        email = user.email
-                        is_superuser = user.is_superuser
-                    except User.DoesNotExist:
-                        nickname = f'用戶 {user_id}'
-                        email = user_id
-                        is_superuser = False
+                        # 首先嘗試從 Conversation 表查找
+                        conv_cursor = DB.execute_sql("""
+                            SELECT user_id FROM conversation WHERE id = %s
+                        """, (conversation_id,))
+                        conv_result = conv_cursor.fetchone()
+                        
+                        if conv_result and conv_result[0]:
+                            actual_user_id = conv_result[0]
+                        else:
+                            # 如果 Conversation 表沒找到，嘗試 API4Conversation 表
+                            api_conv_cursor = DB.execute_sql("""
+                                SELECT user_id FROM api_4_conversation WHERE id = %s
+                            """, (conversation_id,))
+                            api_conv_result = api_conv_cursor.fetchone()
+                            
+                            if api_conv_result and api_conv_result[0]:
+                                actual_user_id = api_conv_result[0]
+                        
+                        # 如果找到了 user_id，獲取用戶信息
+                        if actual_user_id:
+                            user = User.get(User.id == actual_user_id)
+                            actual_user_email = user.email
+                            actual_user_nickname = user.nickname
+                            actual_is_superuser = user.is_superuser
+                            
+                    except Exception as lookup_error:
+                        logging.warning(f"Failed to lookup user for conversation_id {conversation_id}: {lookup_error}")
                     
-                    results.append({
-                        'user_id': user_id,
-                        'nickname': nickname,
-                        'user_email': email,
-                        'is_superuser': is_superuser,
-                        'llm_type': llm_type,
-                        'llm_name': llm_name,
-                        'used_tokens': used_tokens,
-                        'token_limit': token_limit,
-                        'reset_date': reset_date,
-                        'is_active': bool(is_active),
-                        'create_date': create_time,
-                        'update_date': update_time,
-                    })
+                    # 只有找到實際用戶信息時才添加記錄
+                    if actual_user_email and actual_user_id:
+                        results.append({
+                            'user_id': actual_user_id,
+                            'nickname': actual_user_nickname or f'用戶 {actual_user_id}',
+                            'user_email': actual_user_email,
+                            'is_superuser': actual_is_superuser,
+                            'llm_type': llm_type,
+                            'llm_name': llm_name,
+                            'used_tokens': used_tokens,
+                            'token_limit': token_limit,
+                            'reset_date': reset_date,
+                            'is_active': bool(is_active),
+                            'create_date': create_time,
+                            'update_date': update_time,
+                        })
+                    else:
+                        logging.warning(f"Skipping conversation_id {conversation_id}: cannot find associated user")
+                else:
+                    # 跳過沒有 conversation_id 的舊記錄
+                    logging.warning(f"Skipping legacy record without conversation_id: user_id={user_id}, llm_name={llm_name}")
             
             # 3. 如果沒有任何記錄，顯示系統用戶的預設記錄
             if not results:
@@ -407,31 +405,66 @@ class UserTokenService(CommonService):
                 total_records = cursor.fetchone()[0]
                 logging.info(f"Total token usage records: {total_records}")
                 
-                # 活躍用戶數 (有使用過 token 的用戶)
-                # 使用原始 SQL 來避免 Peewee 問題
+                # 活躍用戶數 (有使用過 token 的真實存在用戶)
+                # 1. 直接基於 user_id 的記錄
                 cursor = DB.execute_sql("""
                     SELECT DISTINCT user_id FROM user_token_usage 
                     WHERE used_tokens > 0 AND user_id IS NOT NULL
                 """)
-                active_user_ids = set(row[0] for row in cursor.fetchall())
+                potential_active_user_ids = set(row[0] for row in cursor.fetchall())
                 
+                # 2. 基於 conversation_id 的記錄，需要找到對應的實際用戶
                 cursor = DB.execute_sql("""
                     SELECT DISTINCT conversation_id FROM user_token_usage 
                     WHERE used_tokens > 0 AND conversation_id IS NOT NULL
                 """)
-                active_conversation_ids = set(row[0] for row in cursor.fetchall())
+                active_conversation_ids = [row[0] for row in cursor.fetchall()]
                 
-                active_users_by_user_id = len(active_user_ids)
-                active_users_by_conversation_id = len(active_conversation_ids)
-                active_users = active_users_by_user_id + active_users_by_conversation_id
+                # 查找 conversation_id 對應的實際用戶
+                conversation_user_ids = set()
+                for conv_id in active_conversation_ids:
+                    try:
+                        # 從 Conversation 表查找
+                        conv_cursor = DB.execute_sql("""
+                            SELECT user_id FROM conversation WHERE id = %s
+                        """, (conv_id,))
+                        conv_result = conv_cursor.fetchone()
+                        
+                        if conv_result and conv_result[0]:
+                            conversation_user_ids.add(conv_result[0])
+                        else:
+                            # 從 API4Conversation 表查找
+                            api_conv_cursor = DB.execute_sql("""
+                                SELECT user_id FROM api_4_conversation WHERE id = %s
+                            """, (conv_id,))
+                            api_conv_result = api_conv_cursor.fetchone()
+                            
+                            if api_conv_result and api_conv_result[0]:
+                                conversation_user_ids.add(api_conv_result[0])
+                    except Exception as e:
+                        logging.warning(f"Failed to lookup user for conversation_id {conv_id} in statistics: {e}")
                 
-                logging.info(f"Active users: {active_users} (user_id: {active_users_by_user_id}, conversation_id: {active_users_by_conversation_id})")
+                # 合併所有潛在的活躍用戶ID
+                all_potential_active_user_ids = potential_active_user_ids.union(conversation_user_ids)
+                
+                # 3. 驗證用戶是否真實存在，只統計存在的用戶
+                verified_active_user_ids = set()
+                for user_id in all_potential_active_user_ids:
+                    try:
+                        User.get(User.id == user_id, User.status == "1")
+                        verified_active_user_ids.add(user_id)
+                    except User.DoesNotExist:
+                        logging.warning(f"Skipping non-existent user {user_id} in statistics")
+                
+                active_users = len(verified_active_user_ids)
+                
+                logging.info(f"Active users: {active_users} (potential: {len(all_potential_active_user_ids)}, verified: {len(verified_active_user_ids)})")
                 
                 # 記錄一些樣本
-                if active_user_ids:
-                    logging.info(f"Active user samples (user_id): {list(active_user_ids)[:3]}")
+                if verified_active_user_ids:
+                    logging.info(f"Verified active user samples: {list(verified_active_user_ids)[:3]}")
                 if active_conversation_ids:
-                    logging.info(f"Active user samples (conversation_id): {list(active_conversation_ids)[:3]}")
+                    logging.info(f"Active conversation samples: {active_conversation_ids[:3]}")
                 
                 # 總 token 使用量
                 cursor = DB.execute_sql("SELECT SUM(used_tokens) FROM user_token_usage")
@@ -446,23 +479,59 @@ class UserTokenService(CommonService):
                 logging.info(f"Total tokens limit: {total_tokens_limit}")
                 
                 # 超過限制的用戶數
+                # 1. 直接基於 user_id 的記錄
                 cursor = DB.execute_sql("""
                     SELECT DISTINCT user_id FROM user_token_usage 
                     WHERE token_limit > 0 AND used_tokens >= token_limit AND user_id IS NOT NULL
                 """)
-                over_limit_user_ids = set(row[0] for row in cursor.fetchall())
+                potential_over_limit_user_ids = set(row[0] for row in cursor.fetchall())
                 
+                # 2. 基於 conversation_id 的記錄，需要找到對應的實際用戶
                 cursor = DB.execute_sql("""
                     SELECT DISTINCT conversation_id FROM user_token_usage 
                     WHERE token_limit > 0 AND used_tokens >= token_limit AND conversation_id IS NOT NULL
                 """)
-                over_limit_conversation_ids = set(row[0] for row in cursor.fetchall())
+                over_limit_conversation_ids = [row[0] for row in cursor.fetchall()]
                 
-                users_over_limit_by_user_id = len(over_limit_user_ids)
-                users_over_limit_by_conversation_id = len(over_limit_conversation_ids)
-                users_over_limit = users_over_limit_by_user_id + users_over_limit_by_conversation_id
+                # 查找 conversation_id 對應的實際用戶
+                over_limit_conversation_user_ids = set()
+                for conv_id in over_limit_conversation_ids:
+                    try:
+                        # 從 Conversation 表查找
+                        conv_cursor = DB.execute_sql("""
+                            SELECT user_id FROM conversation WHERE id = %s
+                        """, (conv_id,))
+                        conv_result = conv_cursor.fetchone()
+                        
+                        if conv_result and conv_result[0]:
+                            over_limit_conversation_user_ids.add(conv_result[0])
+                        else:
+                            # 從 API4Conversation 表查找
+                            api_conv_cursor = DB.execute_sql("""
+                                SELECT user_id FROM api_4_conversation WHERE id = %s
+                            """, (conv_id,))
+                            api_conv_result = api_conv_cursor.fetchone()
+                            
+                            if api_conv_result and api_conv_result[0]:
+                                over_limit_conversation_user_ids.add(api_conv_result[0])
+                    except Exception as e:
+                        logging.warning(f"Failed to lookup user for over-limit conversation_id {conv_id}: {e}")
                 
-                logging.info(f"Users over limit: {users_over_limit} (user_id: {users_over_limit_by_user_id}, conversation_id: {users_over_limit_by_conversation_id})")
+                # 合併所有潛在的超過限制用戶ID
+                all_potential_over_limit_user_ids = potential_over_limit_user_ids.union(over_limit_conversation_user_ids)
+                
+                # 3. 驗證用戶是否真實存在，只統計存在的用戶
+                verified_over_limit_user_ids = set()
+                for user_id in all_potential_over_limit_user_ids:
+                    try:
+                        User.get(User.id == user_id, User.status == "1")
+                        verified_over_limit_user_ids.add(user_id)
+                    except User.DoesNotExist:
+                        logging.warning(f"Skipping non-existent over-limit user {user_id} in statistics")
+                
+                users_over_limit = len(verified_over_limit_user_ids)
+                
+                logging.info(f"Users over limit: {users_over_limit} (potential: {len(all_potential_over_limit_user_ids)}, verified: {len(verified_over_limit_user_ids)})")
                 
                 # 按類型統計 token 使用量
                 cursor = DB.execute_sql("""
@@ -525,33 +594,61 @@ class UserTokenService(CommonService):
     def _get_or_create_usage_record(cls, user_id: Optional[str], llm_type: Optional[str], llm_name: Optional[str], conversation_id: Optional[str] = None) -> UserTokenUsage:
         """
         獲取或創建用戶 token 使用記錄
+        完全依賴 conversation_id 來區分用戶，user_id 只作為必填字段來滿足數據庫約束
         """
+        # 強制要求 conversation_id
+        if not conversation_id:
+            raise ValueError("conversation_id is required for token usage tracking")
+        
         try:
-            # 構建查詢條件
-            where_conditions = [
+            # 只查找基於 conversation_id 的記錄
+            record = cls.model.get(
+                cls.model.conversation_id == conversation_id,
                 cls.model.llm_type == llm_type,
                 cls.model.llm_name == llm_name
-            ]
-            
-            if conversation_id:
-                where_conditions.append(cls.model.conversation_id == conversation_id)
-            else:
-                where_conditions.append(cls.model.user_id == user_id)
-                
-            record = cls.model.get(*where_conditions)
+            )
             return record
         except cls.model.DoesNotExist:
             # 創建新記錄
-            # 確定默認限制
+            # 從 conversation 查找實際 user_id
+            actual_user_id = None
+            try:
+                # 從 Conversation 表查找用戶
+                cursor = DB.execute_sql("SELECT user_id FROM conversation WHERE id = %s", (conversation_id,))
+                result = cursor.fetchone()
+                if result and result[0]:
+                    actual_user_id = result[0]
+                else:
+                    # 從 API4Conversation 表查找用戶
+                    cursor = DB.execute_sql("SELECT user_id FROM api_4_conversation WHERE id = %s", (conversation_id,))
+                    result = cursor.fetchone()
+                    if result and result[0]:
+                        actual_user_id = result[0]
+            except Exception as e:
+                logging.warning(f"Failed to lookup user_id for conversation_id {conversation_id}: {e}")
+            
+            # 如果還是沒有 user_id，使用 conversation_id 作為替代（滿足數據庫約束）
+            if not actual_user_id:
+                actual_user_id = conversation_id
+                logging.warning(f"Using conversation_id as user_id fallback: {conversation_id}")
+            
+            # 設置默認限制
             default_limit = settings.NORMAL_USER_TOKEN_LIMIT
             
-            # 如果使用 user_id 且用戶是管理員，則設置為無限制
-            if user_id and not conversation_id:
-                success, user = UserService.get_by_id(user_id)
-                if success and user and user.is_superuser:
-                    default_limit = 0
+            # 嘗試檢查是否為管理員（基於實際 user_id）
+            if actual_user_id and actual_user_id != conversation_id:
+                try:
+                    success, user = UserService.get_by_id(actual_user_id)
+                    if success and user and user.is_superuser:
+                        default_limit = 0
+                except Exception:
+                    pass
             
+            from api.utils import get_uuid
             record_data = {
+                "id": get_uuid(),
+                "user_id": actual_user_id,
+                "conversation_id": conversation_id,  # 主要標識符
                 "llm_type": llm_type,
                 "llm_name": llm_name,
                 "used_tokens": 0,
@@ -559,13 +656,6 @@ class UserTokenService(CommonService):
                 "reset_date": cls._get_next_reset_date(),
                 "is_active": True
             }
-            
-            if conversation_id:
-                record_data["conversation_id"] = conversation_id
-                record_data["user_id"] = None  # 當使用 conversation_id 時，user_id 可以為空
-            else:
-                record_data["user_id"] = user_id
-                record_data["conversation_id"] = None
             
             record = cls.model.create(**record_data)
             return record

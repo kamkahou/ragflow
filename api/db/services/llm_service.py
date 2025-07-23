@@ -330,6 +330,11 @@ class LLMBundle:
         # 使用實際的 LLM 名稱進行使用量記錄
         actual_llm_name = self.llm_name or "default"
         
+        # 添加調試日誌
+        logging.info(f"Recording token usage: operation={operation_name}, tokens={tokens_used}, "
+                    f"conversation_id={self.conversation_id}, user_id={self.user_id}, "
+                    f"llm_type={self.llm_type}, llm_name={actual_llm_name}")
+        
         # 記錄用戶 token 使用量，優先使用 conversation_id
         success = UserTokenService.increase_token_usage(
             user_id=self.user_id,
@@ -339,7 +344,9 @@ class LLMBundle:
             conversation_id=self.conversation_id
         )
         
-        if not success:
+        if success:
+            logging.info(f"Successfully recorded {tokens_used} tokens for conversation_id {self.conversation_id}")
+        else:
             identifier = self.conversation_id or self.user_id
             logging.error(f"Failed to record token usage for identifier {identifier} in {operation_name}: {tokens_used} tokens")
         

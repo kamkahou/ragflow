@@ -279,6 +279,8 @@ def completion():
         def stream():
             nonlocal dia, msg, req, conv
             try:
+                # 添加 conversation_id 到 req 中
+                req["conversation_id"] = conv.id
                 for ans in chat(dia, msg, True, **req):
                     ans = structure_answer(conv, ans, message_id, conv.id)
                     yield "data:" + json.dumps({"code": 0, "message": "", "data": ans}, ensure_ascii=False) + "\n\n"
@@ -298,6 +300,8 @@ def completion():
 
         else:
             answer = None
+            # 添加 conversation_id 到 req 中
+            req["conversation_id"] = conv.id
             for ans in chat(dia, msg, **req):
                 answer = structure_answer(conv, ans, message_id, req["conversation_id"])
                 ConversationService.update_by_id(conv.id, conv.to_dict())
