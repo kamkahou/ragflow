@@ -74,7 +74,7 @@ const Login = () => {
         <Flex justify="center" align="center" gap="middle">
           <img src="/logo.png" alt="logo" width={120} />
           <span style={{ fontSize: '32px', fontWeight: 'bold' }}>
-            Intelligent Instructor
+            iLearning 愛學習
           </span>
         </Flex>
       </div>
