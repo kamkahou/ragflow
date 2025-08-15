@@ -31,12 +31,17 @@ export default () => {
 
   // Check admin LLM configuration on mount and when user becomes admin
   useEffect(() => {
+    // 檢查是否已經關閉過提醒
+    const reminderDismissed =
+      localStorage.getItem('llm_reminder_dismissed') === 'true';
+
     if (
       isAuthenticated &&
       role === 'admin' &&
       userInfo &&
       !showLlmReminder &&
-      !isLoading
+      !isLoading &&
+      !reminderDismissed // 只有在沒有關閉過提醒時才檢查
     ) {
       checkAdminConfig()
         .then((result) => {
@@ -66,6 +71,8 @@ export default () => {
 
   const handleCloseLlmReminder = () => {
     setShowLlmReminder(false);
+    // 添加一個標記來防止重新彈出
+    localStorage.setItem('llm_reminder_dismissed', 'true');
   };
 
   const handleGoToSettings = () => {
@@ -75,7 +82,9 @@ export default () => {
 
   // Re-check configuration when returning from settings page
   useEffect(() => {
+    // 臨時禁用重新檢查邏輯
     if (
+      false && // 設置為 false 來禁用重新檢查
       role === 'admin' &&
       userInfo &&
       location.pathname !== '/user-setting/model' &&
